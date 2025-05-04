@@ -602,7 +602,7 @@ static void adc_vbus_work_handler(struct k_work *work)
 
     if (data->mode == SHOCK_SENSOR_MODE_DISARMED) {
         k_work_schedule_for_queue(&data->workq, &data->dwork, K_MSEC(DELAY));
-        return
+        return;
     }
     // dev
     const struct device *dev = data->dev;
