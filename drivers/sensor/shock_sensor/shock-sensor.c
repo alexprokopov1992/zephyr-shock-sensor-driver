@@ -30,7 +30,7 @@ LOG_MODULE_REGISTER(shock_sensor, CONFIG_SENSOR_LOG_LEVEL);
 #define CONFIG_SEQUENCE_SAMPLES 16
 #define MIN_TAP_INTERVAL 2000 // ms
 #define STOP_ALARM_INTERVAL 5000
-
+#define DELAY 100
 #define ADC_READ_MAX_ATTEMPTS 3
 
 struct sensor_data {
@@ -599,6 +599,11 @@ static void adc_vbus_work_handler(struct k_work *work)
     // Можна при ініціалізації скопіювати sampling_period_ms в data
     struct k_work_delayable *delayable = k_work_delayable_from_work(work);
     struct sensor_data *data = CONTAINER_OF(delayable, struct sensor_data, dwork);
+
+    if (data->mode == SHOCK_SENSOR_MODE_DISARMED) {
+        k_work_schedule_for_queue(&data->workq, &data->dwork, K_MSEC(DELAY));
+        return
+    }
     // dev
     const struct device *dev = data->dev;
     // const struct sensor_config *config = data->dev->config;
