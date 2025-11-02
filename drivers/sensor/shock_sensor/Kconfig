@@ -10,6 +10,10 @@ config SENSOR_SHOCK
 
 if SENSOR_SHOCK
 
+module = SENSOR_SHOCK
+module-str = sensor_shock
+source "subsys/logging/Kconfig.template.log_config"
+
 config SENSOR_SHOCK_THREAD_STACK_SIZE
 	int "Stack size for the analog input thread"
 	default 2048
