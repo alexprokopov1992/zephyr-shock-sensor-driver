@@ -234,13 +234,13 @@ static int attr_set(const struct device *dev,
     if (chan == SENSOR_CHAN_PROX && attr == SENSOR_ATTR_UPPER_THRESH) {
         data->treshold_warn = val->val1;
         data->treshold_main = val->val2;
-        LOG_INF("Seted treshold_warn: %d, treshold_main: %d", data->treshold_warn, data->treshold_main);
+        LOG_DBG("Seted treshold_warn: %d, treshold_main: %d", data->treshold_warn, data->treshold_main);
         return 0;
     }
 
     if (chan == (enum sensor_channel)SHOCK_SENSOR_INCREASE_SENSIVITY_INTERVAL_SEC && attr == (enum sensor_attribute)SHOCK_SENSOR_SPECIAL_ATTRS) {
         data->increase_sensivity_interval = val->val1;
-        LOG_INF("Seted increase_sensivity_interval: %d", data->increase_sensivity_interval);
+        LOG_DBG("Seted increase_sensivity_interval: %d", data->increase_sensivity_interval);
         k_timer_start(&data->increase_sensivity_timer_warn, K_SECONDS(data->increase_sensivity_interval), K_NO_WAIT);
         k_timer_start(&data->increase_sensivity_timer_main, K_SECONDS(data->increase_sensivity_interval), K_NO_WAIT);
         return 0;
@@ -249,7 +249,7 @@ static int attr_set(const struct device *dev,
     if (chan == (enum sensor_channel)SHOCK_SENSOR_NOISE_SAMPLING_TIME_SEC && attr == (enum sensor_attribute)SHOCK_SENSOR_SPECIAL_ATTRS) {
         data->noise_sampling_interval_sec = val->val1;
         data->noise_sampling_interval_msec = data->noise_sampling_interval_sec * 1000;
-        LOG_INF("Seted noise_sampling_interval_sec: %lld", data->noise_sampling_interval_sec);
+        LOG_DBG("Seted noise_sampling_interval_sec: %lld", data->noise_sampling_interval_sec);
         data->max_main_noise_level = 0;
         data->max_main_noise_level_time = k_uptime_get();
         data->max_warn_noise_level = 0;
@@ -274,7 +274,7 @@ static int attr_set(const struct device *dev,
             data->max_warn_noise_level_time = current_time;
             data->max_level_alert_warn = false;
             data->max_level_alert_main = false;
-            LOG_INF("WARN_ZONE disabled");
+            LOG_DBG("WARN_ZONE disabled");
             return 0;
         }
         int value = val->val1 / 10;
@@ -298,7 +298,7 @@ static int attr_set(const struct device *dev,
         data->max_warn_noise_level_time = current_time;
         data->max_level_alert_warn = false;
         data->max_level_alert_main = false;
-        LOG_INF("Seted warn_zone: %d", data->current_warn_zone);
+        LOG_DBG("Seted warn_zone: %d", data->current_warn_zone);
         set_zones(dev, data->current_warn_zone, data->current_main_zone);
         return 0;
     }
@@ -315,7 +315,7 @@ static int attr_set(const struct device *dev,
             data->max_warn_noise_level_time = current_time;
             data->max_level_alert_warn = false;
             data->max_level_alert_main = false;
-            LOG_INF("MAIN_ZONE disabled");
+            LOG_DBG("MAIN_ZONE disabled");
             return 0;
         }
         int value = val->val1 / 10;
@@ -338,7 +338,7 @@ static int attr_set(const struct device *dev,
         data->max_warn_noise_level_time = current_time;
         data->max_level_alert_warn = false;
         data->max_level_alert_main = false;
-        LOG_INF("Seted main_zone: %d", data->current_main_zone);
+        LOG_DBG("Seted main_zone: %d", data->current_main_zone);
         set_zones(dev, data->current_warn_zone, data->current_main_zone);
         return 0;
     }
@@ -366,16 +366,16 @@ static int attr_set(const struct device *dev,
                             data->selected_warn_zone = 9;
                             set_zones(dev, data->current_warn_zone, data->current_main_zone);
                         }
-                        LOG_INF("Sensor is forced to disarmed mode");
+                        LOG_DBG("Sensor is forced to disarmed mode");
                         return 0;
                     case SHOCK_SENSOR_MODE_ALARM:
                         data->mode = SHOCK_SENSOR_MODE_ALARM;
                         if (val->val2 > 3000) {
-                            LOG_INF("Entering alarm mode infinity time");
+                            LOG_DBG("Entering alarm mode infinity time");
                             return 0;
                         } else {
                             k_timer_start(&data->reset_timer_alarm, K_MSEC(STOP_ALARM_INTERVAL), K_NO_WAIT);
-                            LOG_INF("Entering alarm mode for %d ms", STOP_ALARM_INTERVAL);
+                            LOG_DBG("Entering alarm mode for %d ms", STOP_ALARM_INTERVAL);
                             return 0;
                         }     
                     case SHOCK_SENSOR_MODE_ALARM_STOP:
@@ -397,7 +397,7 @@ static int attr_set(const struct device *dev,
                         data->max_main_noise_level_time = current_time;
                         data->max_warn_noise_level = 0;
                         data->max_warn_noise_level_time = current_time;
-                        LOG_INF("Sensor is armed");
+                        LOG_DBG("Sensor is armed");
                         return 0;
                     case SHOCK_SENSOR_MODE_DISARMED:
                         return 0;
@@ -422,20 +422,20 @@ static int attr_set(const struct device *dev,
                         k_timer_stop(&data->increase_sensivity_timer_warn);
                         k_timer_stop(&data->increase_sensivity_timer_main);
                         set_zones(dev, data->current_warn_zone, data->current_main_zone);
-                        LOG_INF("Sensor is forced to disarmed mode");
+                        LOG_DBG("Sensor is forced to disarmed mode");
                         return 0;
                     case SHOCK_SENSOR_MODE_ALARM_STOP:
                         k_timer_start(&data->reset_timer_alarm, K_MSEC(STOP_ALARM_INTERVAL), K_NO_WAIT);
-                        LOG_INF("Alarm mode stoped in %d ms", STOP_ALARM_INTERVAL);
+                        LOG_DBG("Alarm mode stoped in %d ms", STOP_ALARM_INTERVAL);
                         return 0;
                     case SHOCK_SENSOR_MODE_ALARM:
                         data->mode = SHOCK_SENSOR_MODE_ALARM;
                         if (val->val2 > 3000) {
-                            LOG_INF("Entering alarm mode infinity time");
+                            LOG_DBG("Entering alarm mode infinity time");
                             return 0;
                         } else {
                             k_timer_start(&data->reset_timer_alarm, K_MSEC(STOP_ALARM_INTERVAL), K_NO_WAIT);
-                            LOG_INF("Entering alarm mode for %d ms", STOP_ALARM_INTERVAL);
+                            LOG_DBG("Entering alarm mode for %d ms", STOP_ALARM_INTERVAL);
                             return 0;
                         }
                     default:
@@ -749,11 +749,11 @@ static void adc_vbus_work_handler(struct k_work *work)
             {
                 data->mode = SHOCK_SENSOR_MODE_ALARM;
                 data->main_handler(dev, data->main_trigger);  
-                LOG_INF("MAIN amplitude: %d", amplitude_abs);
+                LOG_DBG("MAIN amplitude: %d", amplitude_abs);
                 // LOG_INF("MAIN amplitude: %d %d", amplitude_abs, data->mode);
                 register_tap_main(data);
             } else {
-                LOG_INF("MAIN trigger disabled amplitude: %d", amplitude_abs);
+                LOG_DBG("MAIN trigger disabled amplitude: %d", amplitude_abs);
             }
         } else {
             LOG_ERR("Problem with main_handler");
@@ -765,10 +765,10 @@ static void adc_vbus_work_handler(struct k_work *work)
                 if (!data->max_level_alert_warn)
                 {
                     data->warn_handler(dev, data->warn_trigger);
-                    LOG_INF("WARN amplitude: %d", amplitude_abs);
+                    LOG_DBG("WARN amplitude: %d", amplitude_abs);
                     register_tap_warn(data);
                 } else {
-                    LOG_INF("WARN trigger disabled amplitude: %d", amplitude_abs);
+                    LOG_DBG("WARN trigger disabled amplitude: %d", amplitude_abs);
                 }
             } 
         } else {
@@ -782,12 +782,12 @@ static void adc_vbus_work_handler(struct k_work *work)
         }
         if ((current_time - data->max_main_noise_level_time) > data->noise_sampling_interval_msec) {
             int prev_level = data->max_main_noise_level;
-            LOG_INF("MAIN noise window reset. Previous max: %d", data->max_main_noise_level);
+            LOG_DBG("MAIN noise window reset. Previous max: %d", data->max_main_noise_level);
             data->max_main_noise_level = (int)((float)data->max_main_noise_level / (koeff[data->selected_warn_zone]+little_val));
             if (prev_level == data->max_main_noise_level) {
                 data->max_main_noise_level = 0;
             }
-            LOG_INF("Decrease MAIN noise level to: %d", data->max_main_noise_level);
+            LOG_DBG("Decrease MAIN noise level to: %d", data->max_main_noise_level);
             data->max_main_noise_level_time = current_time;
         } else if (amplitude_abs >= data->max_main_noise_level) {
                     int old_noise_level = data->max_main_noise_level;
@@ -797,17 +797,17 @@ static void adc_vbus_work_handler(struct k_work *work)
                         data->max_main_noise_level = amplitude_abs;
                     }
                     data->max_main_noise_level_time = current_time;
-                    if (old_noise_level != data->max_main_noise_level) LOG_INF("New MAIN max noise level: %d", data->max_main_noise_level);
+                    if (old_noise_level != data->max_main_noise_level) LOG_DBG("New MAIN max noise level: %d", data->max_main_noise_level);
         }
 
         if ((current_time - data->max_warn_noise_level_time) > data->noise_sampling_interval_msec) {
             int prev_level = data->max_warn_noise_level;
-            LOG_INF("WARN noise window reset. Previous max: %d", data->max_warn_noise_level);
+            LOG_DBG("WARN noise window reset. Previous max: %d", data->max_warn_noise_level);
             data->max_warn_noise_level = (int)((float)data->max_warn_noise_level / warn_noise_divider);
             if (prev_level == data->max_warn_noise_level) {
                 data->max_warn_noise_level = 0;
             }
-            LOG_INF("Decrease WARN noise level to: %d", data->max_warn_noise_level);
+            LOG_DBG("Decrease WARN noise level to: %d", data->max_warn_noise_level);
             data->max_warn_noise_level_time = current_time;
         } else if (amplitude_abs >= data->max_warn_noise_level) {
                     int old_noise_level = data->max_warn_noise_level;
@@ -817,7 +817,7 @@ static void adc_vbus_work_handler(struct k_work *work)
                         data->max_warn_noise_level = amplitude_abs;
                     }
                     data->max_warn_noise_level_time = current_time;
-                    if (old_noise_level != data->max_warn_noise_level) LOG_INF("New WARN max noise level: %d", data->max_warn_noise_level);
+                    if (old_noise_level != data->max_warn_noise_level) LOG_DBG("New WARN max noise level: %d", data->max_warn_noise_level);
         }
 
     }
@@ -901,7 +901,7 @@ static int sensor_init(const struct device *dev)
 
     data->sequence.buffer = &data->raw[0];
     data->sequence.buffer_size = sizeof(data->raw); /* buffer size in bytes, not number of samples */
-    LOG_ERR("Buffer size: %d", data->sequence.buffer_size);
+    LOG_INF("Buffer size: %d", data->sequence.buffer_size);
     // data->sequence.resolution = 12;
     data->sequence.options = &options;
 
@@ -967,7 +967,7 @@ static void reset_timer_handler_alarm(struct k_timer *timer)
     if (data->mode != SHOCK_SENSOR_MODE_ALARM) return;
 
     data->mode = SHOCK_SENSOR_MODE_ARMED;
-    LOG_INF("Sensor is armed");
+    LOG_DBG("Sensor is armed");
 }
 
 static void increase_sensivity_warn_handler(struct k_timer *timer)
@@ -1027,7 +1027,7 @@ static void coarsering_warn(struct sensor_data *data, bool increase)
         if (data->current_warn_zone == 9) 
         {
             data->max_level_alert_warn = true;
-            LOG_INF("Warning: Minimum warn zone sensivity reached");
+            LOG_DBG("Warning: Minimum warn zone sensivity reached");
             k_timer_start(&data->increase_sensivity_timer_warn, K_SECONDS(data->increase_sensivity_interval), K_NO_WAIT);
             return;
         }
@@ -1041,7 +1041,7 @@ static void coarsering_warn(struct sensor_data *data, bool increase)
     } else {
         if (data->current_warn_zone == data->selected_warn_zone)
         {
-            LOG_INF("Warning: Maximum or setted warn zone sensivity reached");
+            LOG_DBG("Warning: Maximum or setted warn zone sensivity reached");
             // k_timer_stop(&data->increase_sensivity_timer_warn);
             return;
         }
@@ -1050,7 +1050,7 @@ static void coarsering_warn(struct sensor_data *data, bool increase)
             data->current_warn_zone--; 
             data->max_level_alert_warn = false;
         } else {
-            LOG_INF("Warning: warn zone sensivity can`t be decreased due to noise level");
+            LOG_DBG("Warning: warn zone sensivity can`t be decreased due to noise level");
             k_timer_start(&data->increase_sensivity_timer_warn, K_SECONDS(data->increase_sensivity_interval), K_NO_WAIT);
             return;
         }
@@ -1065,7 +1065,7 @@ static void coarsering_main(struct sensor_data *data, bool increase)
         if (data->current_main_zone == 9) 
         {
             data->max_level_alert_main = true;
-            LOG_INF("Warning: Minimum main zone sensivity reached");
+            LOG_DBG("Warning: Minimum main zone sensivity reached");
             k_timer_start(&data->increase_sensivity_timer_main, K_SECONDS(data->increase_sensivity_interval), K_NO_WAIT);
             return;
         }
@@ -1073,21 +1073,21 @@ static void coarsering_main(struct sensor_data *data, bool increase)
     } else {
         if (data->current_main_zone == data->selected_main_zone) 
         {
-            LOG_INF("Warning: Maximum or setted main zone sensivity reached");
+            LOG_DBG("Warning: Maximum or setted main zone sensivity reached");
             // k_timer_start(&data->increase_sensivity_timer_main, K_SECONDS(data->increase_sensivity_interval), K_NO_WAIT);
             return;
         }
         if (data->max_main_noise_level <= data->main_zones[data->current_main_zone - 1])
         {
             if (data->main_zones[data->current_main_zone-1] <= data->treshold_warn){
-                LOG_INF("Warning: main zone sensivity can`t be decreased due to warn zone");
+                LOG_DBG("Warning: main zone sensivity can`t be decreased due to warn zone");
                 k_timer_start(&data->increase_sensivity_timer_main, K_SECONDS(data->increase_sensivity_interval), K_NO_WAIT);
                 return;
             }
             data->max_level_alert_main = false;
             data->current_main_zone--; 
         } else {
-            LOG_INF("Warning: main zone sensivity can`t be decreased due to noise level");
+            LOG_DBG("Warning: main zone sensivity can`t be decreased due to noise level");
             k_timer_start(&data->increase_sensivity_timer_main, K_SECONDS(data->increase_sensivity_interval), K_NO_WAIT);
             return;
         }
