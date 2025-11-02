@@ -15,7 +15,7 @@
 #include <math.h>
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(shock_sensor, CONFIG_SENSOR_LOG_LEVEL);
+LOG_MODULE_REGISTER(shock_sensor, CONFIG_SENSOR_SHOCK_LOG_LEVEL );
 // LOG_MODULE_REGISTER(shock_sensor, LOG_LEVEL_DBG);
 
 #ifdef CONFIG_SEQUENCE_32BITS_REGISTERS
