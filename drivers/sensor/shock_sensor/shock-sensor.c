@@ -850,7 +850,7 @@ static int sensor_init(const struct device *dev)
 {
     int ret = 0;
 
-    LOG_INF("==== shock_sensor_init(%s)\n", dev->name);
+    LOG_ERR("==== shock_sensor_init(%s)\n", dev->name);
 
     const struct sensor_config *config = dev->config;
     struct sensor_data *data = dev->data;
@@ -901,7 +901,7 @@ static int sensor_init(const struct device *dev)
 
     data->sequence.buffer = &data->raw[0];
     data->sequence.buffer_size = sizeof(data->raw); /* buffer size in bytes, not number of samples */
-    LOG_INF("Buffer size: %d", data->sequence.buffer_size);
+    LOG_ERR("Buffer size: %d", data->sequence.buffer_size);
     // data->sequence.resolution = 12;
     data->sequence.options = &options;
 
@@ -909,7 +909,7 @@ static int sensor_init(const struct device *dev)
     // Use k_sys_work_q for the work queue
     data->workq = k_sys_work_q;
 
-    LOG_INF("==== shock_sensor period: %d ms\n", config->sensor.sampling_period_ms);
+    LOG_ERR("==== shock_sensor period: %d ms\n", config->sensor.sampling_period_ms);
 
     #ifdef CONFIG_USE_SYS_WORK_Q
         k_work_init_delayable(&data->dwork, adc_vbus_work_handler);
