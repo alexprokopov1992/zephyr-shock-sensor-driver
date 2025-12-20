@@ -356,6 +356,10 @@ static int attr_set(const struct device *dev,
                         data->current_main_zone = data->selected_main_zone;
                         data->max_level_alert_warn = false;
                         data->max_level_alert_main = false;
+                        data->max_warn_noise_level = 0;
+                        data->max_main_noise_level = 0;
+                        data->max_main_noise_level_time = current_time;
+                        data->max_warn_noise_level_time = current_time;
                         k_timer_stop(&data->reset_timer_alarm);
                         k_timer_stop(&data->increase_sensivity_timer_warn);
                         k_timer_stop(&data->increase_sensivity_timer_main);
@@ -418,6 +422,10 @@ static int attr_set(const struct device *dev,
                         data->current_main_zone = data->selected_main_zone;
                         data->max_level_alert_warn = false;
                         data->max_level_alert_main = false;
+                        data->max_warn_noise_level = 0;
+                        data->max_main_noise_level = 0;
+                        data->max_main_noise_level_time = current_time;
+                        data->max_warn_noise_level_time = current_time;
                         k_timer_stop(&data->reset_timer_alarm);
                         k_timer_stop(&data->increase_sensivity_timer_warn);
                         k_timer_stop(&data->increase_sensivity_timer_main);
@@ -707,7 +715,7 @@ static void adc_vbus_work_handler(struct k_work *work)
     // Save 16x value, but use normalised value later
     data->adc_centered_value = (data->adc_centered_value * (CONFIG_SHAKE_CENTERED_COUNT-1) + new_val) / CONFIG_SHAKE_CENTERED_COUNT;
 
-    // LOG_ERR("Shake sensor sample_raw: %d", val.val1);
+    
 
     if(data->shake_main) {
         data->shake_main--;
@@ -739,6 +747,8 @@ static void adc_vbus_work_handler(struct k_work *work)
     //     );
     //     debug_counter = 0;
     // }
+
+    // LOG_ERR("Shake sensor sample_raw: %d %d %d %d %d %d %d %d %d %d", amplitude_abs, data->treshold_main, data->treshold_warn, data->shake_main, data->shake_warn, data->max_level_alert_main, data->max_level_alert_warn, data->main_zone_active, data->warn_zone_active, data->mode);
 
     int64_t current_time = k_uptime_get();
 
@@ -775,8 +785,8 @@ static void adc_vbus_work_handler(struct k_work *work)
             LOG_ERR("Problem with warn_handler");
         }
     } else if (data->shake_warn == 0 && data->shake_main == 0) {
-        data->shake_warn = CONFIG_SHAKE_MAIN_TIME;
-        data->shake_main = CONFIG_SHAKE_WARN_TIME;
+        // data->shake_warn = CONFIG_SHAKE_MAIN_TIME;
+        // data->shake_main = CONFIG_SHAKE_WARN_TIME;
         if (!data->main_zone_active && !data->warn_zone_active) {
             goto end;
         }
@@ -1011,13 +1021,14 @@ static void set_warn_zones(const struct device *dev)
 static void create_main_zones(const struct device *dev, int zone)
 {
     struct sensor_data *data = dev->data;
-    float k = koeff[data->selected_warn_zone];
-    float float_main_zones[10];
-    float_main_zones[0] = (float)data->treshold_warn * k;
-    data->main_zones[0] = (int)roundf(float_main_zones[0]);
+
+    float k = koeff[zone];
+    float base = warn_zones_initial[zone];
+
+    data->main_zones[0] = (int)roundf(base * k);
+
     for (int i = 1; i < 10; i++) {
-        float_main_zones[i] = float_main_zones[i-1] * k;
-        data->main_zones[i] = (int)roundf(float_main_zones[i]);
+        data->main_zones[i] = (int)roundf(data->main_zones[i - 1] * k);
     }
 }
 
