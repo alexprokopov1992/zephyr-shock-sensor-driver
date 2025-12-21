@@ -27,11 +27,37 @@ LOG_MODULE_REGISTER(shock_sensor, CONFIG_SENSOR_SHOCK_LOG_LEVEL );
 #define MAX_MAIN_TAP_LEVEL 1201
 #define MAX_WARN_TAP_LEVEL 241
 
-#define CONFIG_SEQUENCE_SAMPLES 16
+
 #define MIN_TAP_INTERVAL 2000 // ms
 #define STOP_ALARM_INTERVAL 5000
 #define DELAY 100
+
+// #define CONFIG_SEQUENCE_SAMPLES 32
+// #define ADC_READ_MAX_ATTEMPTS 3
+// #define CONFIG_SHAKE_CENTERED_COUNT (256 / CONFIG_SEQUENCE_SAMPLES)
+// #define MULTIPLIER 16
+// #define CONFIG_SHAKE_MAIN_TIME 50
+// #define CONFIG_SHAKE_WARN_TIME 50
+// #define SAMPLING_INTERVAL_US 500
+
+// #define CONFIG_SEQUENCE_SAMPLES 8
+// #define ADC_READ_MAX_ATTEMPTS 3
+// #define CONFIG_SHAKE_CENTERED_COUNT 16
+// #define MULTIPLIER 16
+// #define CONFIG_SHAKE_MAIN_TIME 50
+// #define CONFIG_SHAKE_WARN_TIME 50
+// #define SAMPLING_INTERVAL_US 50
+
+#define CONFIG_SEQUENCE_SAMPLES 32
 #define ADC_READ_MAX_ATTEMPTS 3
+#define CONFIG_SHAKE_CENTERED_COUNT 16
+#define MULTIPLIER 16
+#define CONFIG_SHAKE_MAIN_TIME 3
+#define CONFIG_SHAKE_WARN_TIME 3
+#define SAMPLING_INTERVAL_US 500
+#define SHAKE_MINIMUM_LEVEL 15
+
+uint32_t cycle_count = 0;
 
 struct sensor_data {
     struct adc_sequence sequence;
@@ -144,19 +170,11 @@ static void register_tap_warn(struct sensor_data *data);
 
 
 
-#define CONFIG_SHAKE_CENTERED_COUNT (256 / CONFIG_SEQUENCE_SAMPLES)
-// Можливо треба зробити вдвічі більше ніж CONFIG_SHAKE_CENTERED_COUNT.
-// Хоча раз взагалі якось працює і при 1, то може значення 4 буде більш ніж достатньо.
-#define MULTIPLIER 16
+
 
 #define Secs(x) (x * 200 / CONFIG_SEQUENCE_SAMPLES)
 
 // Кількість періодів опитування датчика для визначення спрацювання.
-#define CONFIG_SHAKE_MAIN_TIME Secs(1)
-#define CONFIG_SHAKE_WARN_TIME Secs(1)
-
-
-
 
 static int fetch(const struct device *dev, enum sensor_channel chan)
 {
@@ -600,7 +618,6 @@ static int pm_action(const struct device *dev, enum pm_device_action action)
 
 // int debug_counter = 0;
 
-
 static void adc_vbus_work_handler(struct k_work *work)
 {
     // Шось це якось заплутано. Чи можна якось простіше?
@@ -614,83 +631,35 @@ static void adc_vbus_work_handler(struct k_work *work)
     }
     // dev
     const struct device *dev = data->dev;
-    // const struct sensor_config *config = data->dev->config;
     const struct sensor_config *config = dev->config;
 
-    // adc_vbus_process();
-
-    // printk("w");
-    #if 0
-    int ret = adc_read(config->sensor.port.dev, &data->sequence);
-	if (ret != 0) {
-		LOG_ERR("adc_read: %d", ret);
-	}
-    #endif
-
-    // uint64_t timestart = k_ticks_to_us_floor64(k_uptime_ticks()); //k_uptime_get();
     int ret = 1;
-    #if defined(CONFIG_USE_ASYNC_ADC_READ)
-        struct k_poll_signal async_sig = K_POLL_SIGNAL_INITIALIZER(async_sig);
-        struct k_poll_event async_evt = K_POLL_EVENT_INITIALIZER(K_POLL_TYPE_SIGNAL,
-        K_POLL_MODE_NOTIFY_ONLY, &async_sig);
-        ret = adc_read_async(config->sensor.port.dev, &data->sequence, &async_sig);
-    #else
+    
     int attempts = 0;
     do {
         ret = adc_read(config->sensor.port.dev, &data->sequence);
         if (++attempts == ADC_READ_MAX_ATTEMPTS) break;
     } while(ret != 0);
 
-    #endif
     if(ret != 0) {
         LOG_ERR("adc_read[_async]: %d", ret);
         goto end;
     }
-    // debug_counter++;
-    #if defined(CONFIG_USE_ASYNC_ADC_READ)
-        ret = k_poll(&async_evt, 1, K_FOREVER);
-        if(ret != 0) {
-            LOG_ERR("k_poll: %d", ret);
-            goto end;
-        }
-    #endif
-    // LOG_ERR("Data: %d", data->raw);
 
-    // uint64_t timestop = k_ticks_to_us_floor64(k_uptime_ticks()); //k_uptime_get();
-    // LOG_ERR("ADC read time: %" PRIu64 " usec", timestop - timestart);
 
-    // Час перетворення при interval_us=0:
-    //   1 самплінг - 1200 usec
-    //  10 самплінгів - 1700 usec
-    // 100 самплінгів - 9200 usec
+    if(data->shake_main) {
+        data->shake_main--;
+    }
 
-    #if 0
-    #if CONFIG_SEQUENCE_SAMPLES == 1
-        LOG_ERR("Data: %d", data->raw[0]);
-    #elif CONFIG_SEQUENCE_SAMPLES == 10
-        LOG_ERR("Data: "
-            "%d %d %d %d %d %d %d %d %d %d",
-            data->raw[0], data->raw[1], data->raw[2], data->raw[3], data->raw[4],
-            data->raw[5], data->raw[6], data->raw[7], data->raw[8], data->raw[9]);
-    #else
-        uint32_t sum = 0;
-        uint32_t min = data->raw[0];
-        uint32_t max = data->raw[0];
-        for(int i=0; i<CONFIG_SEQUENCE_SAMPLES; i++) {
-            sum += data->raw[i];
-            if(data->raw[i] < min) {
-                min = data->raw[i];
-            }
-            if(data->raw[i] > max) {
-                max = data->raw[i];
-            }
-        }
-        LOG_ERR("Data: %d/%d/%d %d", min, sum/CONFIG_SEQUENCE_SAMPLES, max, max-min);
-        // LOG_HEXDUMP_ERR(data->raw, sizeof(data->raw), "Data: ");
-    #endif
-    #endif
+    if(data->shake_warn) {
+        data->shake_warn--;
+    }
 
-    // Збільшемо значення шоб подальша математика не втрачала точність
+    if (data->mode)
+    {
+        goto end;
+    }
+
     #if CONFIG_SEQUENCE_SAMPLES == 1
         int new_val = data->raw[0] * MULTIPLIER;
     #else
@@ -711,25 +680,6 @@ static void adc_vbus_work_handler(struct k_work *work)
         int new_val = sum * MULTIPLIER / CONFIG_SEQUENCE_SAMPLES;
     #endif
 
-    // Set centered value. Middle of the last 16 samples
-    // Save 16x value, but use normalised value later
-    data->adc_centered_value = (data->adc_centered_value * (CONFIG_SHAKE_CENTERED_COUNT-1) + new_val) / CONFIG_SHAKE_CENTERED_COUNT;
-
-    
-
-    if(data->shake_main) {
-        data->shake_main--;
-    }
-
-    if(data->shake_warn) {
-        data->shake_warn--;
-    }
-
-    if (data->mode)
-    {
-        goto end;
-    }
-
     #if CONFIG_SEQUENCE_SAMPLES == 1
         int amplitude_x = new_val - data->adc_centered_value;
         int amplitude_abs = abs(amplitude_x) / MULTIPLIER;
@@ -740,18 +690,15 @@ static void adc_vbus_work_handler(struct k_work *work)
         int amplitude_abs = amplitude_x / MULTIPLIER;
     #endif
 
-    // if(debug_counter >= 31) {
-    //     LOG_ERR("Shake amplitude: %d  %d-%d-%d", 
-    //         amplitude_abs,
-    //         min, adc_centered_value, max
-    //     );
-    //     debug_counter = 0;
-    // }
+    
+    if (data->shake_main == 0 && data->shake_warn == 0 && amplitude_abs < SHAKE_MINIMUM_LEVEL) {
 
-    // LOG_ERR("Shake sensor sample_raw: %d %d %d %d %d %d %d %d %d %d", amplitude_abs, data->treshold_main, data->treshold_warn, data->shake_main, data->shake_warn, data->max_level_alert_main, data->max_level_alert_warn, data->main_zone_active, data->warn_zone_active, data->mode);
+        data->adc_centered_value = (data->adc_centered_value * (CONFIG_SHAKE_CENTERED_COUNT-1) + new_val) / CONFIG_SHAKE_CENTERED_COUNT;
+    }
 
+    if (amplitude_abs > 10) LOG_DBG("Shake sensor sample_raw: %d %d %d", amplitude_abs, data->treshold_main, data->treshold_warn);
     int64_t current_time = k_uptime_get();
-
+    cycle_count++;
     if (amplitude_abs > data->treshold_main && data->shake_main == 0 && !data->max_level_alert_main && data->main_zone_active) {
         data->shake_main = CONFIG_SHAKE_MAIN_TIME;
         if (data->main_handler) {
@@ -759,8 +706,7 @@ static void adc_vbus_work_handler(struct k_work *work)
             {
                 data->mode = SHOCK_SENSOR_MODE_ALARM;
                 data->main_handler(dev, data->main_trigger);  
-                LOG_DBG("MAIN amplitude: %d", amplitude_abs);
-                // LOG_INF("MAIN amplitude: %d %d", amplitude_abs, data->mode);
+                LOG_DBG("MAIN amplitude: %d %d", amplitude_abs, cycle_count);
                 register_tap_main(data);
             } else {
                 LOG_DBG("MAIN trigger disabled amplitude: %d", amplitude_abs);
@@ -775,7 +721,7 @@ static void adc_vbus_work_handler(struct k_work *work)
                 if (!data->max_level_alert_warn)
                 {
                     data->warn_handler(dev, data->warn_trigger);
-                    LOG_DBG("WARN amplitude: %d", amplitude_abs);
+                    LOG_DBG("WARN amplitude: %d %d", amplitude_abs, cycle_count);
                     register_tap_warn(data);
                 } else {
                     LOG_DBG("WARN trigger disabled amplitude: %d", amplitude_abs);
@@ -785,8 +731,6 @@ static void adc_vbus_work_handler(struct k_work *work)
             LOG_ERR("Problem with warn_handler");
         }
     } else if (data->shake_warn == 0 && data->shake_main == 0) {
-        // data->shake_warn = CONFIG_SHAKE_MAIN_TIME;
-        // data->shake_main = CONFIG_SHAKE_WARN_TIME;
         if (!data->main_zone_active && !data->warn_zone_active) {
             goto end;
         }
@@ -831,14 +775,14 @@ static void adc_vbus_work_handler(struct k_work *work)
         }
 
     }
+    if (amplitude_abs > SHAKE_MINIMUM_LEVEL && data->shake_main == 0 && data->shake_warn == 0) {
+        data->shake_main = CONFIG_SHAKE_MAIN_TIME * 10;
+        data->shake_warn = CONFIG_SHAKE_WARN_TIME * 10;
+    }
     
 
 end:
-    #ifdef CONFIG_USE_SYS_WORK_Q
-        k_work_schedule(&data->dwork, K_MSEC(config->sensor.sampling_period_ms));
-    #else
-        k_work_schedule_for_queue(&data->workq, &data->dwork, K_MSEC(config->sensor.sampling_period_ms));
-    #endif
+    k_work_schedule_for_queue(&data->workq, &data->dwork, K_MSEC(config->sensor.sampling_period_ms));
 }
 
 // static K_THREAD_STACK_DEFINE(workq_stack, CONFIG_SENSOR_SHOCK_THREAD_STACK_SIZE);
@@ -853,7 +797,7 @@ static const struct sensor_driver_api sensor_api = {
 /* Options for the sequence sampling. */
 const struct adc_sequence_options options = {
     .extra_samplings = CONFIG_SEQUENCE_SAMPLES - 1,
-    .interval_us = 2000,
+    .interval_us = SAMPLING_INTERVAL_US,
 };
 
 static int sensor_init(const struct device *dev)
