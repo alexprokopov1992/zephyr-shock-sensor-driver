@@ -14,6 +14,7 @@
 #include "shock-sensor.h"
 #include <math.h>
 #include <zephyr/logging/log.h>
+#include <errno.h>
 
 LOG_MODULE_REGISTER(shock_sensor, CONFIG_SENSOR_SHOCK_LOG_LEVEL );
 // LOG_MODULE_REGISTER(shock_sensor, LOG_LEVEL_DBG);
@@ -49,13 +50,15 @@ LOG_MODULE_REGISTER(shock_sensor, CONFIG_SENSOR_SHOCK_LOG_LEVEL );
 // #define SAMPLING_INTERVAL_US 50
 
 #define CONFIG_SEQUENCE_SAMPLES 32
-#define ADC_READ_MAX_ATTEMPTS 3
 #define CONFIG_SHAKE_CENTERED_COUNT 16
 #define MULTIPLIER 16
 #define CONFIG_SHAKE_MAIN_TIME 3
 #define CONFIG_SHAKE_WARN_TIME 3
 #define SAMPLING_INTERVAL_US 500
 #define SHAKE_MINIMUM_LEVEL 15
+#define ADC_ERROR_RETRY_DELAY_MS 2
+#define ADC_BLOCK_DURATION_US ((CONFIG_SEQUENCE_SAMPLES - 1) * SAMPLING_INTERVAL_US)
+#define ADC_BLOCK_DURATION_MS ((ADC_BLOCK_DURATION_US + 999) / 1000)
 
 uint32_t cycle_count = 0;
 
@@ -71,7 +74,7 @@ struct sensor_data {
     // #ifndef CONFIG_USE_SYS_WORK_Q
     //     K_KERNEL_STACK_MEMBER(workq_stack, CONFIG_SENSOR_SHOCK_THREAD_STACK_SIZE);
     // #endif
-    // struct k_poll_signal async_sig;
+    struct k_poll_signal async_sig;
     sensor_trigger_handler_t warn_handler;
     const struct sensor_trigger *warn_trigger;
     sensor_trigger_handler_t main_handler;
@@ -92,6 +95,8 @@ struct sensor_data {
 
     int shake_warn;
     int shake_main;
+    int64_t shake_counter_last_update;
+    int64_t center_update_last_time;
     int adc_centered_value;
 
     int min_tap_interval;
@@ -412,6 +417,8 @@ static int attr_set(const struct device *dev,
                         int64_t current_time = k_uptime_get();
                         data->last_tap_time_warn = current_time;
                         data->last_tap_time_main = current_time;
+                        data->shake_counter_last_update = current_time;
+                        data->center_update_last_time = current_time;
                         k_timer_stop(&data->reset_timer_alarm);
                         k_timer_stop(&data->increase_sensivity_timer_warn);
                         k_timer_stop(&data->increase_sensivity_timer_main);
@@ -618,6 +625,97 @@ static int pm_action(const struct device *dev, enum pm_device_action action)
 
 // int debug_counter = 0;
 
+/*
+ * Before continuous block acquisition the counters below were decremented once
+ * per complete ADC block plus sampling-period-ms. Keep that wall-clock timing
+ * so continuous acquisition does not silently change debounce or baseline
+ * tracking behaviour.
+ */
+static uint32_t legacy_processing_period_ms(const struct sensor_config *config)
+{
+    uint32_t period_ms = config->sensor.sampling_period_ms + ADC_BLOCK_DURATION_MS;
+
+    return period_ms > 0U ? period_ms : 1U;
+}
+
+static uint32_t elapsed_legacy_periods(int64_t *last_update,
+                                       const struct sensor_config *config,
+                                       int64_t now)
+{
+    const uint32_t period_ms = legacy_processing_period_ms(config);
+    const int64_t elapsed_ms = now - *last_update;
+
+    if (elapsed_ms < (int64_t)period_ms) {
+        return 0U;
+    }
+
+    const uint32_t periods = (uint32_t)(elapsed_ms / period_ms);
+    *last_update += (int64_t)periods * period_ms;
+    return periods;
+}
+
+static void update_shake_counters(struct sensor_data *data,
+                                  const struct sensor_config *config,
+                                  int64_t now)
+{
+    const uint32_t elapsed_periods =
+        elapsed_legacy_periods(&data->shake_counter_last_update, config, now);
+
+    if (data->shake_main > 0) {
+        data->shake_main = MAX(0, data->shake_main - (int)elapsed_periods);
+    }
+    if (data->shake_warn > 0) {
+        data->shake_warn = MAX(0, data->shake_warn - (int)elapsed_periods);
+    }
+}
+
+static void start_shake_holdoff(struct sensor_data *data, int main_periods,
+                                int warn_periods)
+{
+    if (main_periods >= 0) {
+        data->shake_main = main_periods;
+    }
+    if (warn_periods >= 0) {
+        data->shake_warn = warn_periods;
+    }
+}
+
+static bool baseline_update_due(struct sensor_data *data,
+                                const struct sensor_config *config,
+                                int64_t now)
+{
+    return elapsed_legacy_periods(&data->center_update_last_time, config, now) > 0U;
+}
+
+static int read_adc_block_async(const struct device *adc_dev,
+                                struct sensor_data *data)
+{
+    struct k_poll_event event = K_POLL_EVENT_INITIALIZER(
+        K_POLL_TYPE_SIGNAL, K_POLL_MODE_NOTIFY_ONLY, &data->async_sig);
+    unsigned int signaled = 0U;
+    int result = 0;
+    int ret;
+
+    k_poll_signal_reset(&data->async_sig);
+
+    ret = adc_read_async(adc_dev, &data->sequence, &data->async_sig);
+    if (ret != 0) {
+        return ret;
+    }
+
+    ret = k_poll(&event, 1, K_FOREVER);
+    if (ret != 0) {
+        return ret;
+    }
+
+    k_poll_signal_check(&data->async_sig, &signaled, &result);
+    if (signaled == 0U) {
+        return -EIO;
+    }
+
+    return result;
+}
+
 static void adc_vbus_work_handler(struct k_work *work)
 {
     // Шось це якось заплутано. Чи можна якось простіше?
@@ -633,27 +731,16 @@ static void adc_vbus_work_handler(struct k_work *work)
     const struct device *dev = data->dev;
     const struct sensor_config *config = dev->config;
 
-    int ret = 1;
-    
-    int attempts = 0;
-    do {
-        ret = adc_read(config->sensor.port.dev, &data->sequence);
-        if (++attempts == ADC_READ_MAX_ATTEMPTS) break;
-    } while(ret != 0);
-
-    if(ret != 0) {
-        LOG_ERR("adc_read[_async]: %d", ret);
-        goto end;
+    int ret = read_adc_block_async(config->sensor.port.dev, data);
+    if (ret != 0) {
+        LOG_ERR("adc_read_async: %d", ret);
+        k_work_schedule_for_queue(&data->workq, &data->dwork,
+                                  K_MSEC(ADC_ERROR_RETRY_DELAY_MS));
+        return;
     }
 
-
-    if(data->shake_main) {
-        data->shake_main--;
-    }
-
-    if(data->shake_warn) {
-        data->shake_warn--;
-    }
+    int64_t current_time = k_uptime_get();
+    update_shake_counters(data, config, current_time);
 
     if (data->mode)
     {
@@ -691,16 +778,16 @@ static void adc_vbus_work_handler(struct k_work *work)
     #endif
 
     
-    if (data->shake_main == 0 && data->shake_warn == 0 && amplitude_abs < SHAKE_MINIMUM_LEVEL) {
+    bool baseline_tick = baseline_update_due(data, config, current_time);
+    if (baseline_tick && data->shake_main == 0 && data->shake_warn == 0 && amplitude_abs < SHAKE_MINIMUM_LEVEL) {
 
         data->adc_centered_value = (data->adc_centered_value * (CONFIG_SHAKE_CENTERED_COUNT-1) + new_val) / CONFIG_SHAKE_CENTERED_COUNT;
     }
 
     if (amplitude_abs > 10) LOG_DBG("Shake sensor sample_raw: %d %d %d", amplitude_abs, data->treshold_main, data->treshold_warn);
-    int64_t current_time = k_uptime_get();
     cycle_count++;
     if (amplitude_abs > data->treshold_main && data->shake_main == 0 && !data->max_level_alert_main && data->main_zone_active) {
-        data->shake_main = CONFIG_SHAKE_MAIN_TIME;
+        start_shake_holdoff(data, CONFIG_SHAKE_MAIN_TIME, -1);
         if (data->main_handler) {
             if (!data->max_level_alert_main)
             {
@@ -715,7 +802,7 @@ static void adc_vbus_work_handler(struct k_work *work)
             LOG_ERR("Problem with main_handler");
         }
     } else if (amplitude_abs > data->treshold_warn && data->shake_warn == 0 && !data->max_level_alert_warn && data->warn_zone_active) {
-        data->shake_warn = CONFIG_SHAKE_WARN_TIME;
+        start_shake_holdoff(data, -1, CONFIG_SHAKE_WARN_TIME);
         if (data->warn_handler) {
             if (current_time - data->last_tap_time_warn > MIN_TAP_INTERVAL){
                 if (!data->max_level_alert_warn)
@@ -776,13 +863,18 @@ static void adc_vbus_work_handler(struct k_work *work)
 
     }
     if (amplitude_abs > SHAKE_MINIMUM_LEVEL && data->shake_main == 0 && data->shake_warn == 0) {
-        data->shake_main = CONFIG_SHAKE_MAIN_TIME * 10;
-        data->shake_warn = CONFIG_SHAKE_WARN_TIME * 10;
+        start_shake_holdoff(data, CONFIG_SHAKE_MAIN_TIME * 10,
+                            CONFIG_SHAKE_WARN_TIME * 10);
     }
     
 
 end:
-    k_work_schedule_for_queue(&data->workq, &data->dwork, K_MSEC(config->sensor.sampling_period_ms));
+    if (data->mode != SHOCK_SENSOR_MODE_DISARMED) {
+        k_work_schedule_for_queue(&data->workq, &data->dwork, K_NO_WAIT);
+        k_yield();
+    } else {
+        k_work_schedule_for_queue(&data->workq, &data->dwork, K_MSEC(DELAY));
+    }
 }
 
 // static K_THREAD_STACK_DEFINE(workq_stack, CONFIG_SENSOR_SHOCK_THREAD_STACK_SIZE);
@@ -813,6 +905,8 @@ static int sensor_init(const struct device *dev)
     data->dev = dev;
     data->shake_main = 0;
     data->shake_warn = 0;
+    data->shake_counter_last_update = k_uptime_get();
+    data->center_update_last_time = data->shake_counter_last_update;
     data->adc_centered_value = 0;
     data->warn_handler = NULL;
     data->main_handler = NULL;
@@ -822,6 +916,7 @@ static int sensor_init(const struct device *dev)
     // Перші 10 секунд треба пропустити спрацювання за для стабілізації датчика
     data->shake_main = 10 * 1000 / config->sensor.sampling_period_ms / CONFIG_SEQUENCE_SAMPLES;
     data->shake_warn = data->shake_main;
+    data->shake_counter_last_update = k_uptime_get();
 
     // Середина живлення (десь 522513). Якось треба врахувати розрядність ADC. Поки це 12 біт.
     data->adc_centered_value = MULTIPLIER * 2048;
@@ -864,14 +959,15 @@ static int sensor_init(const struct device *dev)
     data->workq = k_sys_work_q;
 
     LOG_ERR("==== shock_sensor period: %d ms\n", config->sensor.sampling_period_ms);
+    LOG_INF("Continuous ADC blocks: %u samples, %u us interval, block about %u ms",
+            CONFIG_SEQUENCE_SAMPLES, SAMPLING_INTERVAL_US, ADC_BLOCK_DURATION_MS);
+
+    k_poll_signal_init(&data->async_sig);
 
     #ifdef CONFIG_USE_SYS_WORK_Q
         k_work_init_delayable(&data->dwork, adc_vbus_work_handler);
         k_work_schedule(&data->dwork, K_MSEC(config->sensor.sampling_period_ms));
     #else
-        // Init signal
-        // k_poll_signal_init(&data->async_sig);
-
         struct k_work_queue_config workq_cfg = {
             .name = "shock_sensor:WQ",
             // .no_yield = true,
@@ -921,6 +1017,7 @@ static void reset_timer_handler_alarm(struct k_timer *timer)
     if (data->mode != SHOCK_SENSOR_MODE_ALARM) return;
 
     data->mode = SHOCK_SENSOR_MODE_ARMED;
+    data->center_update_last_time = k_uptime_get();
     LOG_DBG("Sensor is armed");
 }
 

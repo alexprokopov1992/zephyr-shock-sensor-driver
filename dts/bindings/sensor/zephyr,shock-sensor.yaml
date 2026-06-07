@@ -36,4 +36,7 @@ properties:
     type: int
     default: 100
     description: |
-      Period to sample the sensor in milliseconds.
+      Legacy processing period in milliseconds. While armed, ADC blocks are
+      started continuously; this value preserves the original debounce and
+      baseline-adaptation timing. While disarmed, the driver polls its mode at
+      a low rate and does not acquire ADC samples.
