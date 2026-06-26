@@ -1,12 +1,12 @@
 config SENSOR_SHOCK
-	bool "ADC based analog shock sensor driver"
+	bool "TIM-triggered ADC based analog shock sensor driver"
 	default y
-	depends on MULTITHREADING && DT_HAS_ZEPHYR_SHOCK_SENSOR_ENABLED
+	depends on MULTITHREADING && SOC_SERIES_STM32H5X && DT_HAS_ZEPHYR_SHOCK_SENSOR_ENABLED
 	select ADC
-    select ADC_ASYNC
+	select DMA
 	select SENSOR
 	help
-	  ADC based analog shock sensor
+	  Analog shock sensor using an STM32H5 timer-triggered ADC and circular DMA.
 
 if SENSOR_SHOCK
 
@@ -15,15 +15,38 @@ module-str = sensor_shock
 source "subsys/logging/Kconfig.template.log_config"
 
 config SENSOR_SHOCK_THREAD_STACK_SIZE
-	int "Stack size for the analog input thread"
-	default 2048
+	int "Stack size for the shock sensor processing thread"
+	default 3072
 	help
-	  Size of the stack used for the analog thread.
+	  Stack used for DMA block copying, raw min/max processing and classification.
 
 config SENSOR_SHOCK_THREAD_PRIORITY
-	int "Priority for the analog input thread"
-	default 0
+	int "Priority for the shock sensor processing thread"
+	default 2
 	help
-	  Priority level of the analog thread.
+	  Priority of the private shock sensor work queue. Lower numeric values have
+	  higher priority in Zephyr. Priority 2 gives the DMA consumer enough CPU time
+	  to drain the queue during modem/CAN/logging activity without making it a
+	  cooperative thread.
+
+config SENSOR_SHOCK_DMA_STATS
+	bool "Periodic DMA diagnostic statistics"
+	default n
+	help
+	  Enable periodic and stream-stop DMA counter reports. The counters remain
+	  present in the driver even when this logging is disabled.
+
+if SENSOR_SHOCK_DMA_STATS
+
+config SENSOR_SHOCK_STATS_INTERVAL_SEC
+	int "DMA diagnostic statistics interval"
+	default 5
+	range 1 3600
+	help
+	  Period in seconds between cumulative DMA diagnostic reports while the
+	  stream is running. Reports half/full callbacks, queued and processed chunks,
+	  dropped chunks, unexpected callback statuses and half-order errors.
+
+endif # SENSOR_SHOCK_DMA_STATS
 
 endif

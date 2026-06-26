@@ -1,18 +1,9 @@
-# Copyright (c) 2019, Peter Bigot Consulting, LLC
 # SPDX-License-Identifier: Apache-2.0
 
 description: |
-  Description for a voltage sensor, with ability to measure
-  hit strength by microphone.
-  An example sensor that reads the ADC amplitude defined in io-channels.
-
-  Example definition in devicetree:
-
-    shock_sensor: shock_sensor {
-      compatible = "zephyr,shock-sensor";
-      status = "okay";
-      io-channels = <&eadc 15>;
-    };
+  STM32H5 analog shock sensor sampled by a hardware timer-triggered ADC and
+  circular DMA. Each completed DMA half-buffer is evaluated using the raw
+  minimum and maximum deviation from a centre calibrated when arming.
 
 compatible: "zephyr,shock-sensor"
 
@@ -21,22 +12,95 @@ include: base.yaml
 properties:
   io-channels:
     required: true
-    description: |
-      Channels available with this divider configuration.
+    description: ADC input used by the analog shock sensor.
 
   power-gpios:
     type: phandle-array
-    description: |
-      Control power to the sensor if present.
+    description: Optional sensor power control GPIO.
 
-      If present the corresponding GPIO must be set to an active level
-      to enable the divider input.
+  sampling-timer:
+    type: phandle
+    required: true
+    description: STM32 timer whose TRGO update event triggers ADC conversion.
+
+  dmas:
+    required: true
+    description: Circular DMA channel used to transfer ADC samples.
+
+  dma-names:
+    required: true
+    const: [rx]
 
   sampling-period-ms:
     type: int
     default: 100
+    deprecated: true
     description: |
-      Legacy processing period in milliseconds. While armed, ADC blocks are
-      started continuously; this value preserves the original debounce and
-      baseline-adaptation timing. While disarmed, the driver polls its mode at
-      a low rate and does not acquire ADC samples.
+      Legacy property retained for board compatibility. The DMA backend does
+      not pause acquisition between blocks.
+
+  sampling-frequency-hz:
+    type: int
+    default: 10000
+    description: Hardware ADC trigger frequency in samples per second.
+
+  dma-buffer-samples:
+    type: int
+    default: 256
+    description: |
+      Total circular DMA buffer size in ADC samples. Half and full DMA
+      callbacks feed the event-processing work queue.
+
+  baseline-update-period-ms:
+    type: int
+    default: 116
+    deprecated: true
+    description: |
+      Legacy property retained for board compatibility. The baseline is fixed
+      while armed and is no longer adapted periodically.
+
+  startup-calibration-blocks:
+    type: int
+    default: 8
+    description: |
+      Number of DMA half-buffers used to calculate the ADC centre on each
+      DISARMED to ARMED transition. The driver takes the median of their mean
+      values and suppresses event detection until calibration completes. Valid
+      range is 3 through 16.
+
+  startup-blanking-ms:
+    type: int
+    default: 200
+    description: |
+      Time after each DMA stream start during which shock events are ignored.
+      A new armed cycle also performs baseline calibration. Alarm re-arm, PM
+      resume and DMA recovery retain the existing centre and apply only this
+      settling delay.
+
+  baseline-max-deviation:
+    type: int
+    default: 128
+    description: |
+      Maximum accepted absolute difference, in raw ADC counts, between the
+      measured arming baseline and the expected 12-bit midpoint 2048. If the
+      measured centre is farther away, it is treated as unreliable and 2048 is
+      used for the complete armed cycle.
+
+  event-quiet-ms:
+    type: int
+    default: 8
+    deprecated: true
+    description: Legacy event-detector property retained for compatibility; not used.
+
+  event-max-ms:
+    type: int
+    default: 120
+    deprecated: true
+    description: Legacy event-detector property retained for compatibility; not used.
+
+  event-lockout-ms:
+    type: int
+    default: 20
+    description: |
+      Dead time after a confirmed event. Weak sub-threshold vibration does not
+      start this event-output lockout.

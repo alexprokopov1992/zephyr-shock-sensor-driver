@@ -20,22 +20,6 @@ enum shock_sensor_mode {
     SHOCK_SENSOR_MODE_ALARM,
     SHOCK_SENSOR_MODE_ALARM_STOP,
 };
-/**
- * @brief Get shock sensor information from devicetree.
- *
- * This returns a static initializer for a @p shock_sensor_dt_spec structure
- * given a devicetree node.
- *
- * @param node_id Devicetree node identifier.
- *
- * @return Static initializer for an shock_sensor_dt_spec structure.
- */
-#define SHOCK_SENSOR_DT_SPEC_GET(node_id)                                                   \
-	{                                                                                       \
-		.port = ADC_DT_SPEC_GET(node_id),                                                   \
-		.sampling_period_ms = DT_PROP_OR(node_id, sampling_period_ms, 100),                     \
-	}
-
 typedef void (*warn_cb)(const struct device *sensor, int value);
 
 __subsystem struct shock_sensor_driver_api {
