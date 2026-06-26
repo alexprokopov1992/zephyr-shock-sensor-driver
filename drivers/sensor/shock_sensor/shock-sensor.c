@@ -38,8 +38,10 @@
 LOG_MODULE_REGISTER(shock_sensor, CONFIG_SENSOR_SHOCK_LOG_LEVEL);
 
 /* STM32H5 ADC regular data is transferred as one 16-bit DMA item.
- * Detection intentionally follows the original calibrated algorithm:
- * one raw min/max peak per completed DMA half-buffer.
+ * Each completed DMA half-buffer contributes one raw min/max amplitude to a
+ * short event window. The event is classified after the signal falls quiet or
+ * after the maximum event duration, so WARN/MAIN decisions use the event peak
+ * instead of the first block that crossed a threshold.
  */
 #define ADC_READING_TYPE uint16_t
 
@@ -68,6 +70,8 @@ LOG_MODULE_REGISTER(shock_sensor, CONFIG_SENSOR_SHOCK_LOG_LEVEL);
 struct shock_sensor_dt_spec {
     const struct adc_dt_spec port;
     uint32_t sampling_frequency_hz;
+    uint32_t event_quiet_ms;
+    uint32_t event_max_ms;
     uint32_t event_lockout_ms;
     uint32_t startup_calibration_blocks;
     uint32_t startup_blanking_ms;
@@ -142,6 +146,12 @@ struct sensor_data {
 
     uint32_t lockout_samples;
     uint32_t lockout_samples_target;
+    uint32_t event_quiet_samples_target;
+    uint32_t event_max_samples_target;
+    uint32_t event_samples;
+    uint32_t event_quiet_samples;
+    uint32_t event_peak;
+    bool event_active;
 
     sensor_trigger_handler_t warn_handler;
     const struct sensor_trigger *warn_trigger;
@@ -212,6 +222,7 @@ static int shock_stream_start(struct sensor_data *data, bool recalibrate_baselin
 static int shock_backend_prepare(struct sensor_data *data);
 static void shock_stream_stop(struct sensor_data *data);
 static void detector_reset(struct sensor_data *data);
+static void classify_event(struct sensor_data *data, uint32_t peak);
 
 static int fetch(const struct device *dev, enum sensor_channel chan)
 {
@@ -499,6 +510,10 @@ static void detector_reset(struct sensor_data *data)
      * transient event-detector state and queued DMA chunks.
      */
     data->lockout_samples = 0U;
+    data->event_active = false;
+    data->event_peak = 0U;
+    data->event_samples = 0U;
+    data->event_quiet_samples = 0U;
     k_msgq_purge(&data->chunk_queue);
 }
 
@@ -573,6 +588,72 @@ static void update_noise_levels(struct sensor_data *data, int amplitude_abs, int
     } else if (amplitude_abs >= data->max_warn_noise_level) {
         data->max_warn_noise_level = MIN(amplitude_abs, MAX_WARN_TAP_LEVEL);
         data->max_warn_noise_level_time = current_time;
+    }
+}
+
+static uint32_t event_start_threshold(const struct sensor_data *data)
+{
+    uint32_t threshold = UINT32_MAX;
+
+    if (data->warn_zone_active && !data->max_level_alert_warn) {
+        threshold = MIN(threshold, (uint32_t)data->treshold_warn);
+    }
+
+    if (data->main_zone_active && !data->max_level_alert_main) {
+        threshold = MIN(threshold, (uint32_t)data->treshold_main);
+    }
+
+    if (threshold == UINT32_MAX) {
+        return UINT32_MAX;
+    }
+
+    return MIN(threshold, (uint32_t)SHAKE_MINIMUM_LEVEL);
+}
+
+static void event_detector_start(struct sensor_data *data, uint32_t amplitude_abs)
+{
+    data->event_active = true;
+    data->event_peak = amplitude_abs;
+    data->event_samples = 0U;
+    data->event_quiet_samples = 0U;
+}
+
+static void event_detector_finish(struct sensor_data *data)
+{
+    const uint32_t peak = data->event_peak;
+    const bool confirmed =
+        (data->main_zone_active && !data->max_level_alert_main &&
+         peak >= (uint32_t)data->treshold_main) ||
+        (data->warn_zone_active && !data->max_level_alert_warn &&
+         peak >= (uint32_t)data->treshold_warn);
+
+    data->event_active = false;
+    data->event_peak = 0U;
+    data->event_samples = 0U;
+    data->event_quiet_samples = 0U;
+
+    classify_event(data, peak);
+    if (confirmed && data->mode == SHOCK_SENSOR_MODE_ARMED) {
+        data->lockout_samples = data->lockout_samples_target;
+    }
+}
+
+static void event_detector_update(struct sensor_data *data,
+                                  uint32_t amplitude_abs,
+                                  size_t count)
+{
+    data->event_peak = MAX(data->event_peak, amplitude_abs);
+    data->event_samples += (uint32_t)count;
+
+    if (amplitude_abs < SHAKE_MINIMUM_LEVEL) {
+        data->event_quiet_samples += (uint32_t)count;
+    } else {
+        data->event_quiet_samples = 0U;
+    }
+
+    if (data->event_quiet_samples >= data->event_quiet_samples_target ||
+        data->event_samples >= data->event_max_samples_target) {
+        event_detector_finish(data);
     }
 }
 
@@ -731,10 +812,6 @@ static void process_samples(struct sensor_data *data,
      * A fresh centre is measured only on the next DISARMED -> ARMED transition.
      */
 
-    /*
-     * Main remains active during warning lockout, so a stronger continuation
-     * can still escalate to the main event.
-     */
     const bool in_lockout = data->lockout_samples > 0U;
     if (data->lockout_samples > count) {
         data->lockout_samples -= (uint32_t)count;
@@ -742,31 +819,28 @@ static void process_samples(struct sensor_data *data,
         data->lockout_samples = 0U;
     }
 
-    if (data->main_zone_active && !data->max_level_alert_main &&
-        amplitude_abs >= data->treshold_main) {
-        LOG_DBG("Shock block peak=%d min=%u max=%u center=%d class=main warn=%d main=%d",
+    if (data->event_active) {
+        LOG_DBG("Shock event block peak=%d min=%u max=%u center=%d event_peak=%u warn=%d main=%d",
                 amplitude_abs, (unsigned)raw_min, (unsigned)raw_max, center,
-                data->treshold_warn, data->treshold_main);
-        classify_event(data, (uint32_t)amplitude_abs);
-        if (data->mode != SHOCK_SENSOR_MODE_ARMED) {
-            return;
-        }
-        data->lockout_samples = data->lockout_samples_target;
+                data->event_peak, data->treshold_warn, data->treshold_main);
+        event_detector_update(data, (uint32_t)amplitude_abs, count);
         return;
     }
 
-    if (!in_lockout && data->warn_zone_active &&
-        !data->max_level_alert_warn &&
-        amplitude_abs >= data->treshold_warn) {
-        LOG_DBG("Shock block peak=%d min=%u max=%u center=%d class=warn-candidate warn=%d main=%d",
-                amplitude_abs, (unsigned)raw_min, (unsigned)raw_max, center,
-                data->treshold_warn, data->treshold_main);
-        classify_event(data, (uint32_t)amplitude_abs);
-        data->lockout_samples = data->lockout_samples_target;
+    if (in_lockout &&
+        (!data->main_zone_active || data->max_level_alert_main ||
+         amplitude_abs < data->treshold_main)) {
         return;
     }
 
-    if (in_lockout) {
+    const uint32_t start_threshold = event_start_threshold(data);
+    if (start_threshold != UINT32_MAX &&
+        amplitude_abs >= (int)start_threshold) {
+        LOG_DBG("Shock event start peak=%d min=%u max=%u center=%d warn=%d main=%d",
+                amplitude_abs, (unsigned)raw_min, (unsigned)raw_max, center,
+                data->treshold_warn, data->treshold_main);
+        event_detector_start(data, (uint32_t)amplitude_abs);
+        event_detector_update(data, (uint32_t)amplitude_abs, count);
         return;
     }
 
@@ -1316,6 +1390,14 @@ static int sensor_init(const struct device *dev)
     }
 
     data->dma_half_samples = data->dma_buffer_samples / 2U;
+    data->event_quiet_samples_target = MAX(
+        1U,
+        (uint32_t)(((uint64_t)config->sensor.sampling_frequency_hz *
+                    config->sensor.event_quiet_ms) / 1000ULL));
+    data->event_max_samples_target = MAX(
+        data->event_quiet_samples_target,
+        (uint32_t)(((uint64_t)config->sensor.sampling_frequency_hz *
+                    config->sensor.event_max_ms) / 1000ULL));
     data->lockout_samples_target = MAX(
         1U,
         (uint32_t)(((uint64_t)config->sensor.sampling_frequency_hz *
@@ -1370,8 +1452,10 @@ static int sensor_init(const struct device *dev)
     const uint32_t half_buffer_us = (uint32_t)(
         ((uint64_t)data->dma_half_samples * 1000000ULL) /
         config->sensor.sampling_frequency_hz);
-    LOG_INF("Raw block detector: half=%u samples (%u us), lockout=%u ms",
+    LOG_INF("Peak event detector: half=%u samples (%u us), quiet=%u ms, max=%u ms, lockout=%u ms",
             (unsigned)data->dma_half_samples, half_buffer_us,
+            config->sensor.event_quiet_ms,
+            config->sensor.event_max_ms,
             config->sensor.event_lockout_ms);
     LOG_INF("Baseline: calibrate on arm, median=%u blocks, blanking=%u ms, "
             "max deviation=%u; fixed while armed",
@@ -1570,6 +1654,8 @@ static void register_tap_warn(struct sensor_data *data)
         .port = ADC_DT_SPEC_GET(node_id),                                      \
         .sampling_frequency_hz =                                               \
             DT_PROP_OR(node_id, sampling_frequency_hz, 10000),                  \
+        .event_quiet_ms = DT_PROP_OR(node_id, event_quiet_ms, 8),              \
+        .event_max_ms = DT_PROP_OR(node_id, event_max_ms, 120),                \
         .event_lockout_ms = DT_PROP_OR(node_id, event_lockout_ms, 20),         \
         .startup_calibration_blocks =                                          \
             DT_PROP_OR(node_id, startup_calibration_blocks, 8),                \
@@ -1596,6 +1682,13 @@ static void register_tap_warn(struct sensor_data *data)
                  "shock sensor input must use ADC2");                         \
     BUILD_ASSERT(DT_INST_PROP_OR(inst, sampling_frequency_hz, 10000) > 0,      \
                  "shock sampling frequency must be non-zero");                \
+    BUILD_ASSERT(DT_INST_PROP_OR(inst, event_quiet_ms, 8) > 0,                \
+                 "shock event quiet time must be non-zero");                 \
+    BUILD_ASSERT(DT_INST_PROP_OR(inst, event_max_ms, 120) >=                  \
+                     DT_INST_PROP_OR(inst, event_quiet_ms, 8),                 \
+                 "shock event max time must be at least quiet time");        \
+    BUILD_ASSERT(DT_INST_PROP_OR(inst, event_lockout_ms, 20) > 0,             \
+                 "shock event lockout must be non-zero");                    \
     BUILD_ASSERT(DT_INST_PROP_OR(inst, startup_calibration_blocks, 8) >= 3,     \
                  "shock startup calibration needs at least three blocks");    \
     BUILD_ASSERT(DT_INST_PROP_OR(inst, startup_calibration_blocks, 8) <=       \

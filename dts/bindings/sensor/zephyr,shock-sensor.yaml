@@ -89,14 +89,16 @@ properties:
   event-quiet-ms:
     type: int
     default: 8
-    deprecated: true
-    description: Legacy event-detector property retained for compatibility; not used.
+    description: |
+      Time the block amplitude must stay below the minimum shake level before
+      the active shock event is closed and classified by its captured peak.
 
   event-max-ms:
     type: int
     default: 120
-    deprecated: true
-    description: Legacy event-detector property retained for compatibility; not used.
+    description: |
+      Maximum duration of one shock event window. If the signal does not fall
+      quiet, the event is closed and classified when this limit is reached.
 
   event-lockout-ms:
     type: int
